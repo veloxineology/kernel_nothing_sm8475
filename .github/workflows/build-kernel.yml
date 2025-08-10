@@ -1,4 +1,4 @@
-name: Build Meteoric Kernel (inline-2)
+name: Build Kernel
 
 on:
   workflow_dispatch:
@@ -8,33 +8,60 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-        with:
-          ref: inline-2
-          submodules: recursive
+    - name: Checkout source
+      uses: actions/checkout@v4
 
-      - name: Setup environment
-        run: |
-          sudo apt update
-          sudo apt install -y bc bison build-essential curl flex gcc clang git zip unzip libssl-dev libncurses-dev python3 wget jq
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y bc bison build-essential ccache curl flex git \
+          libncurses-dev libssl-dev lld llvm make python3 wget zip zstd
 
-      - name: Clone Neutron Clang
-        run: |
-          mkdir -p ~/meteoric/neutron-clang
-          cd ~/meteoric/neutron-clang
-          curl -LO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
-          chmod a+x antman
-          ./antman -S
-          cd -
-          echo "$HOME/meteoric/neutron-clang/bin" >> $GITHUB_PATH
+    - name: Download Neutron Clang (16.0.2)
+      run: |
+        curl -LO https://github.com/Neutron-Toolchains/clang-build/releases/download/16.0.2-20230506/neutron-clang-16.0.2-20230506.tar.zst
+        tar -I zstd -xvf neutron-clang-16.0.2-20230506.tar.zst
+        echo "$PWD/neutron-clang/bin" >> $GITHUB_PATH
 
-      - name: Export environment variables
-        run: |
-          echo "ARCH=arm64" >> $GITHUB_ENV
-          echo "SUBARCH=arm64" >> $GITHUB_ENV
-          echo "KBUILD_BUILD_HOST=Neoteric" >> $GITHUB_ENV
-          echo "KBUILD_BUILD_USER=HELLBOY017" >> $GITHUB_ENV
+    - name: Apply KernelSU-next
+      run: |
+        git clone https://github.com/tiann/KernelSU.git --depth=1 -b main
+        cp -r KernelSU/kernel/* drivers/kernelsu/
+        echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/meteoric_defconfig
+
+    - name: Clean build
+      run: |
+        rm -rf out
+        mkdir -p out
+
+    - name: Build kernel
+      run: |
+        export PATH="$PWD/neutron-clang/bin:$PATH"
+        export ARCH=arm64
+        export SUBARCH=arm64
+        export CC=clang
+        make O=out vendor/meteoric_defconfig
+        make -j$(nproc --all) O=out \
+          ARCH=arm64 \
+          CC=clang \
+          CLANG_TRIPLE=aarch64-linux-gnu- \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+    - name: Package kernel
+      run: |
+        mkdir AnyKernel
+        git clone https://github.com/<your-anykernel-repo>.git AnyKernel
+        cp out/arch/arm64/boot/Image AnyKernel/
+        cd AnyKernel
+        zip -r9 Kernel.zip ./*
+
+    - name: Upload to Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: AnyKernel/Kernel.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}          echo "KBUILD_BUILD_USER=HELLBOY017" >> $GITHUB_ENV
           echo "PROCS=$(nproc --all)" >> $GITHUB_ENV
           echo "DISTRO=$(source /etc/os-release && echo "$NAME")" >> $GITHUB_ENV
           echo "KBUILD_COMPILER_STRING=$($HOME/meteoric/neutron-clang/bin/clang --version | head -n 1 | sed -E 's/\(http.*\)//g')" >> $GITHUB_ENV
